@@ -1,27 +1,55 @@
-name: Build
+name: Release
 
 on:
   release:
     types:
       - created
 
+permissions:
+  contents: write
+
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # static command line binary for servers
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            features: ""
+            name: worldpruner-linux-x86_64-cli
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            features: "--features gui"
+            name: worldpruner-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: "--features gui"
+            name: worldpruner-windows-x86_64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            features: "--features gui"
+            name: worldpruner-macos-aarch64
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: endsWith(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Test
+        run: cargo test
       - name: Build
-        run:  |
-          chmod +x ./gradlew
-          ./gradlew build
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
       - name: Upload release asset
-        uses: AButler/upload-release-assets@v2.0
-        with:
-          files: 'build/libs/*'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          binary=target/${{ matrix.target }}/release/worldpruner
+          if [ -f "$binary.exe" ]; then binary="$binary.exe"; fi
+          cp "$binary" "${{ matrix.name }}"
+          gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.name }}" --clobber

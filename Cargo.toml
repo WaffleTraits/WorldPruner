@@ -1,0 +1,48 @@
+[package]
+name = "worldpruner"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Fast, multi-threaded tool to prune unused chunks from a Minecraft Java Edition world"
+license = "MIT"
+repository = "https://github.com/WaffleTraits/WorldPruner"
+readme = "README.md"
+keywords = ["minecraft", "anvil", "chunks", "prune"]
+categories = ["command-line-utilities", "game-development"]
+
+[lib]
+name = "worldpruner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "worldpruner"
+path = "src/main.rs"
+
+[features]
+default = []
+# Desktop front end (the Rust counterpart of the original Swing window).
+gui = ["dep:eframe", "dep:rfd"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+ctrlc = "3"
+# zlib-rs is a pure-Rust inflate that is noticeably faster than miniz_oxide.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+indicatif = "0.17"
+log = { version = "0.4", features = ["std"] }
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-decode", "safe-encode"] }
+rayon = "1.10"
+rustc-hash = "2"
+
+eframe = { version = "0.29", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+rfd = { version = "0.15", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
