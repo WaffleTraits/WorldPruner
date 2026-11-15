@@ -267,6 +267,13 @@ pub(crate) fn summarize(dimension: &Dimension, report: &Report, elapsed: Duratio
         if before == 0 { 0.0 } else { before.saturating_sub(after) as f64 * 100.0 / before as f64 },
         elapsed.as_secs_f64()
     );
+    if report.chunks_empty > 0 {
+        let _ = writeln!(
+            out,
+            "  {} chunks have space reserved but hold no data; the game regenerates them anyway, so they were treated as never visited",
+            report.chunks_empty
+        );
+    }
     if report.chunks_unreadable > 0 {
         let _ = writeln!(out, "  {} chunks could not be read and were kept", report.chunks_unreadable);
     }

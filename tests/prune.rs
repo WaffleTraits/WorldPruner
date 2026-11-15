@@ -416,6 +416,54 @@ fn unreadable_chunk_aborts_before_anything_is_changed() {
 }
 
 #[test]
+fn allocated_chunks_without_data_are_not_errors() {
+    let world = world_of("no-data", vec![((0, 0), chunk(900)), ((1, 0), chunk(900)), ((2, 0), chunk(900)), ((3, 0), chunk(0)), ((40, 0), chunk(900))]);
+    // Chunks 1|0, 2|0 and 40|0 have sectors reserved, but nothing was ever
+    // written to them: the length prefix is zero. The game logs "allocated,
+    // but stream is missing" and generates such chunks anew.
+    for pos in [ChunkPos::new(1, 0), ChunkPos::new(2, 0), ChunkPos::new(40, 0)] {
+        let path = world.root.join("region").join(pos.region().file_name());
+        let mut bytes = fs::read(&path).unwrap();
+        let location = Header::parse(&bytes).unwrap().location(pos.index());
+        let start = location.offset as usize * 4096;
+        bytes[start..start + location.sectors as usize * 4096].fill(0);
+        fs::write(&path, bytes).unwrap();
+    }
+
+    // no --continue-on-error needed, and nothing is reported as an error
+    let report = world.prune(&by_time(100)).unwrap();
+    assert_eq!((report.errors, report.chunks_unreadable, report.chunks_empty), (0, 0, 3));
+    assert_eq!(report.chunks_scanned, 5);
+    // they are pruned like unvisited chunks, here together with 3|0
+    let bytes = fs::read(world.root.join("region/r.0.0.mca")).unwrap();
+    assert_eq!(Header::parse(&bytes).unwrap().present().iter().collect::<Vec<_>>(), vec![0]);
+    assert!(!world.root.join("region/r.1.0.mca").exists());
+    assert_eq!(world.present("entities"), set(&[(0, 0)]));
+}
+
+#[test]
+fn allocated_chunks_without_data_survive_when_selected() {
+    let world = world_of("no-data-kept", vec![((0, 0), chunk(900)), ((1, 0), chunk(0)), ((5, 0), chunk(0))]);
+    let path = world.root.join("region/r.0.0.mca");
+    let mut bytes = fs::read(&path).unwrap();
+    let location = Header::parse(&bytes).unwrap().location(1);
+    let start = location.offset as usize * 4096;
+    bytes[start..start + location.sectors as usize * 4096].fill(0);
+    fs::write(&path, bytes).unwrap();
+
+    // within the radius of an inhabited chunk: its slot is carried over
+    // untouched instead of being dropped, and the file stays well-formed
+    let report = world.prune(&PruneOptions { radius: 1, ..by_time(100) }).unwrap();
+    assert_eq!((report.errors, report.chunks_empty), (0, 1));
+    let bytes = fs::read(&path).unwrap();
+    let header = Header::parse(&bytes).unwrap();
+    assert_eq!(header.present().iter().collect::<Vec<_>>(), vec![0, 1]);
+    let kept = header.location(1);
+    assert!(bytes[kept.offset as usize * 4096..][..kept.sectors as usize * 4096].iter().all(|&b| b == 0));
+    assert_eq!(bytes.len() % 4096, 0);
+}
+
+#[test]
 fn unreadable_chunk_is_kept_when_continuing() {
     let world = world_of("continue", vec![((0, 0), chunk(0)), ((1, 0), chunk(0)), ((2, 0), chunk(900)), ((40, 0), chunk(0))]);
     corrupt_chunk(&world, ChunkPos::new(1, 0));

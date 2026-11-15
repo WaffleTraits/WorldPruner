@@ -25,6 +25,10 @@ newer world generation. A chunk is **kept** if
 Everything else is removed from the `region`, `poi` and `entities` files of the dimension, including the
 `.mcc` files of oversized chunks.
 
+Region files can also contain chunks that have space reserved but no data in it, typically left behind by a
+crash or an interrupted save. The game treats those as missing and generates them anew, so they count as chunks
+nobody visited rather than as errors. The summary says how many there were.
+
 ## Installation
 
 Install it with a [Rust toolchain](https://rustup.rs) (1.89 or newer):

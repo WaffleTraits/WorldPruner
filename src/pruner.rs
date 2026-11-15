@@ -100,6 +100,10 @@ pub struct Report {
     pub chunks_scanned: u64,
     /// Chunks that could not be read and were therefore kept.
     pub chunks_unreadable: u64,
+    /// Chunks that have space reserved in a region file but hold no data.
+    /// The game treats them as missing, so they are pruned like chunks that
+    /// nobody visited.
+    pub chunks_empty: u64,
     pub structures: StructureStats,
     /// The final selection of chunks to keep.
     pub selection: Stats,
@@ -201,6 +205,8 @@ struct RegionScan {
     /// Chunks that could not be read. They are kept to be safe.
     unreadable: ChunkSet,
     chunks: u64,
+    /// Chunks without any data, see [`Report::chunks_empty`].
+    empty: u64,
     starts: Vec<(StructureKey, Box<[ChunkRect]>)>,
     keep_structures: Vec<StructureKey>,
     ignored_boxes: usize,
@@ -216,6 +222,7 @@ impl RegionScan {
             chunks: 0,
             starts: Vec::new(),
             keep_structures: Vec::new(),
+            empty: 0,
             ignored_boxes: 0,
         }
     }
@@ -280,15 +287,27 @@ impl Scanner<'_> {
             }
             scan.chunks += 1;
             let chunk = region.chunk(index);
-            let read = (|| -> Result<()> {
+            // `Ok(false)`: the chunk has no data at all
+            let read = (|| -> Result<bool> {
                 read_sectors(&mut file, location, sectors)?;
-                let reader = decompressor.open(sectors, region, index, self.dir)?;
-                Ok(read_chunk_info(reader, info)?)
+                let Some(reader) = decompressor.open(sectors, region, index, self.dir)? else { return Ok(false) };
+                read_chunk_info(reader, info)?;
+                Ok(true)
             })();
-            if let Err(e) = read {
-                self.errors.report(e.context(format!("failed to read chunk {chunk} in {}", path.display())));
-                scan.unreadable.set(index);
-                continue;
+            match read {
+                Ok(true) => {}
+                Ok(false) => {
+                    // Nothing to lose and nothing to inspect: it is neither
+                    // kept on its own merit nor an error.
+                    log::debug!("chunk {chunk} in {} is allocated but holds no data", path.display());
+                    scan.empty += 1;
+                    continue;
+                }
+                Err(e) => {
+                    self.errors.report(e.context(format!("failed to read chunk {chunk} in {}", path.display())));
+                    scan.unreadable.set(index);
+                    continue;
+                }
             }
 
             let keep = self.keeps(chunk, info);
@@ -446,6 +465,7 @@ fn prune_in_pool(dimension: &Dimension, options: &PruneOptions, progress: &dyn P
     for scan in scans {
         report.regions_scanned += 1;
         report.chunks_scanned += scan.chunks;
+        report.chunks_empty += scan.empty;
         report.chunks_unreadable += scan.unreadable.len() as u64;
         if scan.failed {
             selection.add_region(scan.region);

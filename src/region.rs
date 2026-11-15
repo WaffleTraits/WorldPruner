@@ -155,13 +155,18 @@ impl Decompressor {
     /// loaded by [`read_sectors`], `index` is its header slot and `dir` the
     /// directory of the region file, where oversized chunks are stored as
     /// `c.<x>.<z>.mcc`.
-    pub fn open<'a>(&'a mut self, sectors: &'a [u8], region: RegionPos, index: usize, dir: &Path) -> Result<ChunkReader<'a>> {
+    ///
+    /// Returns `None` for a chunk that has sectors reserved in the header but
+    /// a length of zero, i.e. no data was ever written to them. The game
+    /// treats such a chunk as missing ("allocated, but stream is missing")
+    /// and generates it anew.
+    pub fn open<'a>(&'a mut self, sectors: &'a [u8], region: RegionPos, index: usize, dir: &Path) -> Result<Option<ChunkReader<'a>>> {
         let Some((length, rest)) = sectors.split_first_chunk::<4>() else {
             bail!("chunk header is truncated");
         };
         let length = u32::from_be_bytes(*length) as usize;
         if length == 0 {
-            bail!("chunk has a declared length of zero");
+            return Ok(None);
         }
         let Some(record) = rest.get(..length) else {
             bail!("chunk is truncated: {length} bytes declared, {} available", rest.len());
@@ -169,14 +174,14 @@ impl Decompressor {
         let (scheme, payload) = (record[0], &record[1..]);
 
         if scheme & EXTERNAL_FLAG == 0 {
-            return self.decoder(scheme, Payload::Inline(payload));
+            return self.decoder(scheme, Payload::Inline(payload)).map(Some);
         }
         let path = dir.join(mcc_file_name(region.chunk(index)));
         self.external.clear();
         File::open(&path)
             .and_then(|mut f| f.read_to_end(&mut self.external))
             .with_context(|| format!("failed to read oversized chunk file {}", path.display()))?;
-        self.decoder(scheme & !EXTERNAL_FLAG, Payload::External)
+        self.decoder(scheme & !EXTERNAL_FLAG, Payload::External).map(Some)
     }
 
     fn decoder<'a>(&'a mut self, scheme: u8, payload: Payload<'a>) -> Result<ChunkReader<'a>> {
@@ -599,7 +604,7 @@ pub mod testing {
         let mut sectors = Vec::new();
         read_sectors(&mut file, location, &mut sectors).unwrap();
         let mut decompressor = Decompressor::default();
-        let mut reader = decompressor.open(&sectors, region, index, path.parent()?).unwrap();
+        let mut reader = decompressor.open(&sectors, region, index, path.parent()?).unwrap()?;
         let mut out = Vec::new();
         reader.read_to_end(&mut out).unwrap();
         Some(out)
@@ -691,7 +696,8 @@ mod tests {
         sectors[..4].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(open_err(&mut d, &sectors, 0).unwrap().contains("truncated"));
         sectors[..4].copy_from_slice(&0u32.to_be_bytes());
-        assert!(open_err(&mut d, &sectors, 0).unwrap().contains("length of zero"));
+        // a length of zero is not an error: the chunk was allocated but never written
+        assert!(matches!(d.open(&sectors, R, 0, dir.path()), Ok(None)));
         // unknown and custom compression
         sectors[..4].copy_from_slice(&100u32.to_be_bytes());
         sectors[4] = 9;
@@ -701,7 +707,7 @@ mod tests {
         // garbage zlib data fails while reading, not while opening
         sectors[4] = COMPRESSION_ZLIB;
         sectors[5..60].fill(0xAA);
-        let mut reader = d.open(&sectors, R, 0, dir.path()).unwrap();
+        let mut reader = d.open(&sectors, R, 0, dir.path()).unwrap().unwrap();
         assert!(reader.read_to_end(&mut Vec::new()).is_err());
         // truncated zlib stream
         let good = compress(&payload(3, 50_000), Storage::Zlib);
