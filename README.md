@@ -123,7 +123,8 @@ only needs a terminal, so it works over SSH on a headless server:
 
 - Fill in the form; invalid values are flagged as you type and `Tab` completes paths like a shell.
 - **Preview** (`F2`) runs a dry run and shows what would be removed. Nothing is changed.
-- **Prune** (`F10`, or `p` after a preview) asks for confirmation, then shows live progress. `Esc` cancels safely.
+- **Prune** (`F10`, or `p` after a preview) asks for confirmation, then shows live progress with the
+  elapsed time and an ETA. `Esc` cancels safely.
 - Options given on the command line fill in the form, e.g. `worldpruner --tui -w /srv/minecraft/world -t 1h`.
 
 ### GUI Mode

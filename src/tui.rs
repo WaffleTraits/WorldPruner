@@ -4,7 +4,7 @@
 //! confirmation step and live progress. It only needs a terminal, so it
 //! works over SSH on a headless server.
 
-use crate::job::{Job, RunningJob};
+use crate::job::{Job, RunningJob, format_clock};
 use crate::{capture_console_log, captured_console_log, describe};
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
@@ -583,11 +583,13 @@ impl App {
         let widget = Gauge::default().gauge_style(Style::new().fg(Color::Cyan)).ratio(ratio.clamp(0.0, 1.0)).label(format!("{message}: {done}/{total}"));
         frame.render_widget(widget, gauge);
 
-        let elapsed = running.started.elapsed().as_secs();
         let text = if running.is_cancelling() {
             "Stopping after the files that are being processed...".to_string()
         } else {
-            format!("Elapsed: {}:{:02}", elapsed / 60, elapsed % 60)
+            // the number of files to rewrite is only known after the scan,
+            // so the estimate is for the step that is running
+            let eta = running.progress.eta().map_or("estimating...".to_string(), format_clock);
+            format!("Elapsed: {}    ETA for this step: {eta}", format_clock(running.started.elapsed()))
         };
         frame.render_widget(Paragraph::new(text), status);
     }
@@ -918,7 +920,8 @@ mod tests {
         // F2 runs a dry run that changes nothing
         app.on_key(key(KeyCode::F(2)));
         assert!(matches!(app.screen, Screen::Running(_)));
-        assert!(render(&app).contains("Preview (dry run)"));
+        let screen = render(&app);
+        assert!(screen.contains("Preview (dry run)") && screen.contains("Elapsed: 0:00") && screen.contains("ETA for this step:"), "{screen}");
         wait_until_done(&mut app);
         let screen = render(&app);
         assert!(screen.contains("nothing was changed") && screen.contains("would remove 1 chunks"), "{screen}");

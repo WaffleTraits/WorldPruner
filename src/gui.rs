@@ -4,7 +4,7 @@
 //! arguments opens this window.
 
 use crate::describe;
-use crate::job::{Job, RunningJob};
+use crate::job::{Job, RunningJob, format_clock};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -199,7 +199,8 @@ impl eframe::App for App {
             if let Some(running) = &self.running {
                 let (message, done, total) = running.progress.snapshot();
                 let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 };
-                ui.add(egui::ProgressBar::new(fraction).text(format!("{message}: {done}/{total}")));
+                let eta = running.progress.eta().map_or(String::new(), |eta| format!(" - about {} left", format_clock(eta)));
+                ui.add(egui::ProgressBar::new(fraction).text(format!("{message}: {done}/{total}{eta}")));
                 let cancelling = running.is_cancelling();
                 if ui.add_enabled(!cancelling, egui::Button::new(if cancelling { "Stopping..." } else { "Cancel" })).clicked() {
                     running.cancel();

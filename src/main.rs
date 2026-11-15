@@ -198,7 +198,7 @@ impl CliProgress {
     fn new() -> Self {
         let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stderr_with_hz(10));
         bar.set_style(
-            ProgressStyle::with_template("{msg:<16} {bar:30} {pos}/{len} {percent:>3}% [{elapsed_precise}<{eta_precise}]")
+            ProgressStyle::with_template("{msg:<16} {bar:30} {pos}/{len} {percent:>3}%  elapsed {elapsed_precise}  ETA {eta_precise}")
                 .expect("valid template")
                 .progress_chars("=> "),
         );
