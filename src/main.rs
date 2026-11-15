@@ -1,15 +1,20 @@
-//! Command line (and optional GUI) front end.
+//! Command line front end, with an optional terminal UI and desktop window.
 
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "gui")]
 mod gui;
+#[cfg(any(feature = "gui", feature = "tui"))]
+mod job;
+#[cfg(feature = "tui")]
+mod tui;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +36,9 @@ Examples:
   Prune the Nether and the End, but only show what would happen:
     worldpruner -w /path/to/world -t 1h -D the_nether -D the_end --dry-run
 
+  Set everything up interactively in the terminal:
+    worldpruner --tui
+
 Make sure you have a backup of your world, and that it is not open in the
 game or on a running server.";
 
@@ -39,8 +47,12 @@ game or on a running server.";
 #[command(name = "worldpruner", version, after_help = AFTER_HELP)]
 struct Args {
     /// The path to the world folder, or to a dimension folder such as world/DIM-1
-    #[arg(short = 'w', long, value_name = "PATH")]
-    world: PathBuf,
+    #[arg(short = 'w', long, value_name = "PATH", required_unless_present = "tui")]
+    world: Option<PathBuf>,
+
+    /// Open the interactive terminal interface. Other options given on the command line fill in its form
+    #[arg(short = 'i', long, visible_alias = "interactive")]
+    tui: bool,
 
     /// The minimum time players must have spent in a chunk for it to be kept, e.g. "5 minutes" or "1h30m"
     #[arg(short = 't', long, value_name = "DURATION", default_value = "0s", value_parser = parse_time)]
@@ -99,6 +111,24 @@ fn parse_time(s: &str) -> Result<u64, String> {
 /// The progress bar currently on screen, so log output can be printed above it.
 static PROGRESS_BAR: OnceLock<ProgressBar> = OnceLock::new();
 
+/// While the terminal interface owns the screen, messages for the console
+/// are collected here instead of being printed.
+static CAPTURED_LOG: Mutex<Option<VecDeque<String>>> = Mutex::new(None);
+const CAPTURED_LOG_LINES: usize = 500;
+
+/// Collect console messages instead of printing them (or stop doing so).
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn capture_console_log(capture: bool) {
+    *CAPTURED_LOG.lock().unwrap_or_else(|e| e.into_inner()) = capture.then(VecDeque::new);
+}
+
+/// The most recent `count` captured console messages, oldest first.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+pub(crate) fn captured_console_log(count: usize) -> Vec<String> {
+    let log = CAPTURED_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    log.as_ref().map(|lines| lines.iter().skip(lines.len().saturating_sub(count)).cloned().collect()).unwrap_or_default()
+}
+
 struct Logger {
     start: Instant,
     console_level: log::LevelFilter,
@@ -131,9 +161,18 @@ impl log::Log for Logger {
     fn log(&self, record: &log::Record) {
         if record.level() <= self.console_level {
             let line = format!("{}: {}", record.level().as_str().to_lowercase(), record.args());
-            match PROGRESS_BAR.get() {
-                Some(bar) => bar.suspend(|| eprintln!("{line}")),
-                None => eprintln!("{line}"),
+            let mut captured = CAPTURED_LOG.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(lines) = captured.as_mut() {
+                if lines.len() == CAPTURED_LOG_LINES {
+                    lines.pop_front();
+                }
+                lines.push_back(line);
+            } else {
+                drop(captured);
+                match PROGRESS_BAR.get() {
+                    Some(bar) => bar.suspend(|| eprintln!("{line}")),
+                    None => eprintln!("{line}"),
+                }
             }
         }
         if let Some((level, file)) = &self.file
@@ -256,11 +295,12 @@ pub(crate) fn describe(options: &PruneOptions) -> String {
 }
 
 fn run(args: Args, cancel: &AtomicBool) -> Result<bool> {
+    let world = args.world.as_deref().context("the --world argument is required")?;
     let whitelist = match &args.white_list {
         Some(path) => Selection::from_csv_file(path)?,
         None => Selection::new(),
     };
-    let dimensions = resolve_dimensions(&args.world, &args.dimensions)?;
+    let dimensions = resolve_dimensions(world, &args.dimensions)?;
     let options = PruneOptions {
         inhabited_time: (args.time * TICKS_PER_SECOND) as i64,
         radius: args.radius,
@@ -271,7 +311,7 @@ fn run(args: Args, cancel: &AtomicBool) -> Result<bool> {
         threads: args.threads,
     };
 
-    let _lock = match lock_world(&args.world) {
+    let _lock = match lock_world(world) {
         LockResult::Acquired(lock) => Some(lock),
         LockResult::InUse(path) if args.force || args.dry_run => {
             log::warn!("the world is in use by another program ({} is locked); continuing anyway", path.display());
@@ -302,21 +342,61 @@ fn run(args: Args, cancel: &AtomicBool) -> Result<bool> {
     Ok(complete)
 }
 
-fn main() -> ExitCode {
-    #[cfg(feature = "gui")]
-    {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let debug_only = args.len() == 1 && (args[0] == "--debug" || args[0] == "-d");
-        if args.is_empty() || debug_only {
-            let _ = Logger::install(debug_only, None);
-            return gui::run();
-        }
-    }
+/// True if a desktop window can be opened from this process.
+#[cfg(feature = "gui")]
+fn has_display() -> bool {
+    !cfg!(all(unix, not(target_os = "macos"))) || std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
 
-    let args = Args::parse();
+/// Open the terminal interface, with its form filled in from `args`.
+fn run_tui(args: &Args) -> ExitCode {
+    #[cfg(feature = "tui")]
+    {
+        tui::run(tui::Prefill {
+            world: args.world.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+            dimensions: args.dimensions.join(", "),
+            // without --time the form suggests a more useful value than "0s"
+            time: if args.time == 0 { "5 minutes".to_string() } else { format_duration(args.time) },
+            radius: args.radius,
+            whitelist: args.white_list.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+            whitelist_only: args.white_list_only,
+            continue_on_error: args.continue_on_error,
+            threads: args.threads,
+            force: args.force,
+        })
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = args;
+        eprintln!("error: this build of worldpruner does not include the terminal interface (build with the \"tui\" feature)");
+        ExitCode::FAILURE
+    }
+}
+
+fn main() -> ExitCode {
+    // Without arguments, open an interactive front end if there is one.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let debug_only = raw_args.len() == 1 && (raw_args[0] == "--debug" || raw_args[0] == "-d");
+    let interactive = raw_args.is_empty() || debug_only;
+    #[cfg(feature = "gui")]
+    if interactive && has_display() {
+        let _ = Logger::install(debug_only, None);
+        return gui::run();
+    }
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let args = if interactive && terminal && cfg!(feature = "tui") {
+        Args::parse_from(std::iter::once("worldpruner".to_string()).chain(raw_args).chain(["--tui".to_string()]))
+    } else {
+        Args::parse()
+    };
     if let Err(e) = Logger::install(args.debug, args.log_file.as_ref()) {
         eprintln!("error: {e:#}");
         return ExitCode::FAILURE;
+    }
+    if args.tui {
+        let code = run_tui(&args);
+        log::logger().flush();
+        return code;
     }
 
     let cancel = Arc::new(AtomicBool::new(false));

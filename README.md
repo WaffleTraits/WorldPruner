@@ -1,6 +1,7 @@
 # WorldPruner ![](https://user-images.githubusercontent.com/13237524/168894674-c2b8c07e-a4d6-4eb9-ab9d-b906b78dcb70.png)
 
-A fast, multi-threaded command line (and optional GUI) app to prune chunks from a Minecraft Java Edition world.
+A fast, multi-threaded command line app to prune chunks from a Minecraft Java Edition world, with an interactive
+terminal interface and an optional desktop GUI.
 
 This is a Rust port of [Querz/WorldPruner](https://github.com/Querz/WorldPruner). It keeps the original command
 line, works with worlds from 1.13 up to 26.x, and is built for large server worlds.
@@ -29,8 +30,9 @@ Everything else is removed from the `region`, `poi` and `entities` files of the 
 Build it with a [Rust toolchain](https://rustup.rs) (1.89 or newer):
 
 ```sh
-cargo build --release                  # command line only
-cargo build --release --features gui   # with the desktop window
+cargo build --release                          # command line and terminal interface
+cargo build --release --features gui           # ... plus the desktop window
+cargo build --release --no-default-features    # command line only
 ```
 
 The binary is `target/release/worldpruner`. No Java is required.
@@ -42,7 +44,8 @@ Close the world first: stop the server or leave the world in the game. WorldPrun
 
 | Argument(s)                 | Default Value | Description                                                                 |
 |-----------------------------|---------------|-----------------------------------------------------------------------------|
-| `--world` `-w`              | *Required*    | The path to the world folder, or to a dimension folder such as `world/DIM-1` |
+| `--world` `-w`              | *Required*    | The path to the world folder, or to a dimension folder such as `world/DIM-1`. Optional with `--tui` |
+| `--tui` `-i`                |               | Open the [interactive terminal interface](#terminal-interface)              |
 | `--time` `-t`               | `0s`          | The minimum time a chunk should have to be kept                             |
 | `--radius` `-r`             | `0`           | The radius of additional chunks preserved around matching chunks (max 128)  |
 | `--white-list` `-W`         |               | The path to a whitelist CSV file                                            |
@@ -82,11 +85,38 @@ worldpruner --world "/path/to/my/world/" --time "1 day" --radius 10 --white-list
 
 The exit code is `0` on success, `1` on errors and `130` if the run was cancelled with Ctrl-C.
 
+### Terminal interface
+
+`worldpruner --tui` (or just `worldpruner` without arguments in a terminal) opens an interactive interface that
+only needs a terminal, so it works over SSH on a headless server:
+
+```
+┌ WorldPruner 2.0.0 ───────────────────────────────────────────────────────────────┐
+│ > World:         /srv/minecraft/world/                                           │
+│   Dimensions:    the_nether, the_end                                             │
+│   InhabitedTime: 5 minutes                                                       │
+│   Radius:        2                                                               │
+│   Whitelist:     (none)                                                          │
+│   [ ] Prune everything except the whitelist                                      │
+│   [x] Continue on errors                                                         │
+│   Threads:       0 (all cores)                                                   │
+│                                                                                  │
+│   [ Preview (dry run) ]  [ Prune ]  [ Quit ]                                     │
+└──────────────────────────────────────────────────────────────────────────────────┘
+ Up/Down move  Tab complete  Enter select  F2 preview  F10 prune  Esc quit
+```
+
+- Fill in the form; invalid values are flagged as you type and `Tab` completes paths like a shell.
+- **Preview** (`F2`) runs a dry run and shows what would be removed. Nothing is changed.
+- **Prune** (`F10`, or `p` after a preview) asks for confirmation, then shows live progress. `Esc` cancels safely.
+- Options given on the command line fill in the form, e.g. `worldpruner --tui -w /srv/minecraft/world -t 1h`.
+
 ### GUI Mode
 
-When built with `--features gui`, starting `worldpruner` without arguments opens a window with the same options
-as the original Swing GUI: open your world folder, provide a minimum time, a radius and an
-optional [whitelist](#whitelisting-chunks) containing all chunks that should be kept in any case.
+When built with `--features gui`, starting `worldpruner` without arguments on a desktop opens a window with the
+same options as the original Swing GUI: open your world folder, provide a minimum time, a radius and an
+optional [whitelist](#whitelisting-chunks) containing all chunks that should be kept in any case. Without a
+display (for example over SSH) the terminal interface opens instead.
 
 ## Supported worlds
 

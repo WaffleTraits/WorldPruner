@@ -19,7 +19,9 @@ name = "worldpruner"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["tui"]
+# Interactive terminal interface (`worldpruner --tui`), works over SSH.
+tui = ["dep:ratatui"]
 # Desktop front end (the Rust counterpart of the original Swing window).
 gui = ["dep:eframe", "dep:rfd"]
 
@@ -35,6 +37,7 @@ lz4_flex = { version = "0.11", default-features = false, features = ["std", "saf
 rayon = "1.10"
 rustc-hash = "2"
 
+ratatui = { version = "0.30", optional = true }
 eframe = { version = "0.29", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 rfd = { version = "0.15", optional = true }
 

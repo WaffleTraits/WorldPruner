@@ -3,18 +3,15 @@
 //! Built only with the `gui` cargo feature. Starting the program without
 //! arguments opens this window.
 
-use crate::{describe, summarize};
+use crate::describe;
+use crate::job::{Job, RunningJob};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use worldpruner::duration::parse_duration;
-use worldpruner::pruner::{MAX_RADIUS, Progress, PruneOptions, TICKS_PER_SECOND, prune};
+use worldpruner::pruner::{MAX_RADIUS, PruneOptions, TICKS_PER_SECOND};
 use worldpruner::selection::Selection;
-use worldpruner::world::{Dimension, LockResult, lock_world, resolve_dimensions};
+use worldpruner::world::{Dimension, resolve_dimensions};
 
 const WORLD_HELP: &str = "The folder containing your world files.\n\n\
     Select the world folder itself to prune the Overworld. For other dimensions select their folder: \
@@ -28,45 +25,6 @@ const RADIUS_HELP: &str = "The radius of additional chunks preserved around matc
 const WHITELIST_HELP: &str = "The whitelist contains chunks and regions that need to be kept in any case.\n\n\
     Whitelists can be created in MCA Selector by using Selection --> Export selection as .csv.";
 
-/// Progress shared between the worker thread and the window.
-struct SharedProgress {
-    message: Mutex<String>,
-    total: AtomicU64,
-    done: AtomicU64,
-    ctx: egui::Context,
-}
-
-impl Progress for SharedProgress {
-    fn begin(&self, message: &str, total: u64) {
-        *self.message.lock().unwrap_or_else(|e| e.into_inner()) = message.to_string();
-        self.done.store(0, Ordering::Relaxed);
-        self.total.store(total, Ordering::Relaxed);
-        self.ctx.request_repaint();
-    }
-
-    fn advance(&self, steps: u64) {
-        self.done.fetch_add(steps, Ordering::Relaxed);
-        self.ctx.request_repaint();
-    }
-
-    fn finish(&self) {
-        self.ctx.request_repaint();
-    }
-}
-
-/// A pruning run that is waiting for confirmation or in progress.
-struct Job {
-    dimensions: Vec<Dimension>,
-    options: PruneOptions,
-    world: PathBuf,
-}
-
-struct Running {
-    progress: Arc<SharedProgress>,
-    cancel: Arc<AtomicBool>,
-    result: Receiver<Result<String, String>>,
-}
-
 struct App {
     world: String,
     time: String,
@@ -75,7 +33,7 @@ struct App {
     continue_on_error: bool,
     dry_run: bool,
     confirm: Option<Job>,
-    running: Option<Running>,
+    running: Option<RunningJob>,
     /// Outcome of the last run: text and whether it is an error.
     outcome: Option<(String, bool)>,
 }
@@ -133,7 +91,7 @@ impl App {
                 dry_run: self.dry_run,
                 threads: 0,
             };
-            Ok(Job { dimensions, options, world: PathBuf::from(self.world.trim()) })
+            Ok(Job { dimensions, options, world: PathBuf::from(self.world.trim()), force: false })
         })();
         match job {
             Ok(job) => self.confirm = Some(job),
@@ -142,41 +100,10 @@ impl App {
     }
 
     fn start(&mut self, job: Job, ctx: &egui::Context) {
-        let progress =
-            Arc::new(SharedProgress { message: Mutex::new("Starting".to_string()), total: AtomicU64::new(0), done: AtomicU64::new(0), ctx: ctx.clone() });
-        let cancel = Arc::new(AtomicBool::new(false));
-        let (sender, result) = channel();
-        let (worker_progress, worker_cancel) = (Arc::clone(&progress), Arc::clone(&cancel));
-        std::thread::spawn(move || {
-            let outcome = run_job(&job, &worker_progress, &worker_cancel);
-            let _ = sender.send(outcome);
-            worker_progress.ctx.request_repaint();
-        });
+        let ctx = ctx.clone();
         self.outcome = None;
-        self.running = Some(Running { progress, cancel, result });
+        self.running = Some(RunningJob::start(job, move || ctx.request_repaint()));
     }
-}
-
-fn run_job(job: &Job, progress: &SharedProgress, cancel: &AtomicBool) -> Result<String, String> {
-    let _lock = match lock_world(&job.world) {
-        LockResult::Acquired(lock) => Some(lock),
-        LockResult::InUse(_) if job.options.dry_run => None,
-        LockResult::InUse(_) => return Err("The world is open in the game or on a running server. Close it first.".to_string()),
-        LockResult::Unknown(path, e) => {
-            log::warn!("could not check whether the world is in use ({}: {e})", path.display());
-            None
-        }
-    };
-    let mut text = String::new();
-    for dimension in &job.dimensions {
-        let start = Instant::now();
-        let report = prune(dimension, &job.options, progress, cancel).map_err(|e| format!("{e:#}"))?;
-        text.push_str(&summarize(dimension, &report, start.elapsed()));
-        if report.cancelled {
-            break;
-        }
-    }
-    Ok(text)
 }
 
 /// A label with an info marker that explains the field on hover.
@@ -194,7 +121,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // collect the result of a finished run
         if let Some(running) = &self.running
-            && let Ok(result) = running.result.try_recv()
+            && let Some(result) = running.poll()
         {
             self.outcome = Some(match result {
                 Ok(text) => (text, false),
@@ -270,14 +197,12 @@ impl eframe::App for App {
 
             ui.add_space(8.0);
             if let Some(running) = &self.running {
-                let total = running.progress.total.load(Ordering::Relaxed);
-                let done = running.progress.done.load(Ordering::Relaxed).min(total);
-                let message = running.progress.message.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let (message, done, total) = running.progress.snapshot();
                 let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 };
                 ui.add(egui::ProgressBar::new(fraction).text(format!("{message}: {done}/{total}")));
-                let cancelling = running.cancel.load(Ordering::Relaxed);
+                let cancelling = running.is_cancelling();
                 if ui.add_enabled(!cancelling, egui::Button::new(if cancelling { "Stopping..." } else { "Cancel" })).clicked() {
-                    running.cancel.store(true, Ordering::Relaxed);
+                    running.cancel();
                 }
             }
             if let Some((text, is_error)) = &self.outcome {

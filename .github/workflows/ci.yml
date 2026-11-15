@@ -25,5 +25,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Lint (GUI)
         run: cargo clippy --all-targets --features gui -- -D warnings
+      - name: Lint (command line only)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
       - name: Test
         run: cargo test
