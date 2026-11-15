@@ -27,12 +27,23 @@ Everything else is removed from the `region`, `poi` and `entities` files of the 
 
 ## Installation
 
-Build it with a [Rust toolchain](https://rustup.rs) (1.89 or newer):
+Install it with a [Rust toolchain](https://rustup.rs) (1.89 or newer):
+
+```sh
+cargo install --locked --git https://github.com/WaffleTraits/WorldPruner --branch rust-port
+```
+
+This builds the command line tool with the terminal interface and puts `worldpruner` into `~/.cargo/bin`, which
+rustup adds to your `PATH`. Run the same command again to update, and `cargo uninstall worldpruner` to remove it.
+Add `--features gui` for the desktop window, or `--no-default-features` for the plain command line tool.
+
+To build from a checkout instead:
 
 ```sh
 cargo build --release                          # command line and terminal interface
 cargo build --release --features gui           # ... plus the desktop window
 cargo build --release --no-default-features    # command line only
+cargo install --locked --path .                # or install straight from the checkout
 ```
 
 The binary is `target/release/worldpruner`. No Java is required.
